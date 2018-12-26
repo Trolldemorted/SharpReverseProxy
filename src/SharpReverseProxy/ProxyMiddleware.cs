@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Net.Http;
+using System.Net.WebSockets;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Options;
@@ -56,30 +58,42 @@ namespace SharpReverseProxy {
         }
 
         private async Task ProxyTheRequest(HttpContext context, HttpRequestMessage proxyRequest, ProxyRule proxyRule) {
-            using (var responseMessage = await _httpClient.SendAsync(proxyRequest,
+            if (context.WebSockets.IsWebSocketRequest) {
+                await ProxyWebSocket.HandleWebSocket(context, proxyRequest, proxyRule);
+            } else {
+                using (var responseMessage = await _httpClient.SendAsync(proxyRequest,
                                                                      HttpCompletionOption.ResponseHeadersRead,
-                                                                     context.RequestAborted)) {
+                                                                     context.RequestAborted))
+                {
 
-                if(proxyRule.PreProcessResponse || proxyRule.ResponseModifier == null) { 
-                    context.Response.StatusCode = (int)responseMessage.StatusCode;
-                    context.Response.ContentType = responseMessage.Content?.Headers.ContentType?.MediaType;
-                    foreach (var header in responseMessage.Headers) {
-                        context.Response.Headers[header.Key] = header.Value.ToArray();
-                    }
-                    // SendAsync removes chunking from the response. 
-                    // This removes the header so it doesn't expect a chunked response.
-                    context.Response.Headers.Remove("transfer-encoding");
 
-                    if (responseMessage.Content != null) {
-                        foreach (var contentHeader in responseMessage.Content.Headers) {
-                            context.Response.Headers[contentHeader.Key] = contentHeader.Value.ToArray();
+
+                    if (proxyRule.PreProcessResponse || proxyRule.ResponseModifier == null)
+                    {
+                        context.Response.StatusCode = (int)responseMessage.StatusCode;
+                        context.Response.ContentType = responseMessage.Content?.Headers.ContentType?.MediaType;
+                        foreach (var header in responseMessage.Headers)
+                        {
+                            context.Response.Headers[header.Key] = header.Value.ToArray();
                         }
-                        await responseMessage.Content.CopyToAsync(context.Response.Body);
+                        // SendAsync removes chunking from the response. 
+                        // This removes the header so it doesn't expect a chunked response.
+                        context.Response.Headers.Remove("transfer-encoding");
+
+                        if (responseMessage.Content != null)
+                        {
+                            foreach (var contentHeader in responseMessage.Content.Headers)
+                            {
+                                context.Response.Headers[contentHeader.Key] = contentHeader.Value.ToArray();
+                            }
+                            await responseMessage.Content.CopyToAsync(context.Response.Body);
+                        }
                     }
-                }
-                
-                if (proxyRule.ResponseModifier != null) {
-                    await proxyRule.ResponseModifier.Invoke(responseMessage, context);
+
+                    if (proxyRule.ResponseModifier != null)
+                    {
+                        await proxyRule.ResponseModifier.Invoke(responseMessage, context);
+                    }
                 }
             }
         }
